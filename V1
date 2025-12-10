@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>UPH Tracker</title>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+body { font-family: Arial, sans-serif; padding:20px; max-width:600px; margin:auto; transition:0.3s; }
+button, input[type=number] { width:100%; padding:10px; margin:6px 0; font-size:16px; border-radius:6px; border:none; cursor:pointer; }
+#progressBar { width:100%; height:25px; background:#bbb; border-radius:5px; overflow:hidden; margin-top:10px; }
+#progressFill { height:100%; width:0%; background:green; }
+
+.row { display:flex; gap:6px; }
+
+body.light { background:#fff; color:#222; }
+body.dark { background:#222; color:#eee; }
+body.night { background:#0a1a2a; color:#b9d9ff; }
+
+button { background:#007bff; color:#fff; }
+body.dark button { background:#444; }
+body.night button { background:#113a57; }
+
+.exception-box { margin-top:10px; padding:10px; border-radius:6px; border:1px solid #888; }
+</style>
+</head>
+<body class="light">
+
+<h2>Items Per Hour Tracker</h2>
+
+<div class="row">
+    <button id="startShiftBtn">Start Shift</button>
+    <button id="stopShiftBtn" style="background:#d9534f;">Stop Shift</button>
+</div>
+
+<div id="timeDisplay">Elapsed Time: 0h 0m 0s</div>
+<div id="exceptionStatus" style="margin-top:8px;color:red;">Exception: None</div>
+
+<h3>Counters</h3>
+<div class="row">
+    <input type="number" id="itemsPerPackage" placeholder="Items per package" min="1" value="1">
+    <button onclick="addPackage()">+1 Package</button>
+</div>
+<div class="row">
+    <input type="number" id="itemCount" placeholder="Number of items to add" min="1">
+    <button onclick="addItems()">Add Items</button>
+</div>
+
+<div style="margin-top:12px;">
+<strong>Packages:</strong> <span id="packages">0</span><br>
+<strong>Items:</strong> <span id="items">0</span><br>
+<strong>Items Per Hour:</strong> <span id="iph">0</span><br>
+<strong>Pace (200 IPH):</strong> <span id="paceLeft">200 left</span><br>
+<strong>Pace vs Actual:</strong> <span id="pacePercent">0%</span>
+</div>
+
+<h3 style="margin-top:20px;">Progress Toward 200 Items/Hour</h3>
+<div id="progressBar"><div id="progressFill"></div></div>
+
+<h3>Performance Graph</h3>
+<canvas id="hourlyChart"></canvas>
+
+<h3>Exceptions (Pauses)</h3>
+<div class="row">
+<button onclick="startException('Bathroom')">Bathroom</button>
+<button onclick="startException('Missing Item')">Missing Item</button>
+</div>
+<div class="row">
+<button onclick="startException('Andon Help')">Andon Help</button>
+<button onclick="startException('Supplies')">Supplies</button>
+</div>
+<button onclick="startException('Troubleshooting')">Troubleshooting</button>
+<button onclick="stopException()" style="background:#d9534f;">Stop Exception</button>
+
+<h3>Theme</h3>
+<div class="row">
+<button onclick="setTheme('light')">Light</button>
+<button onclick="setTheme('dark')">Dark</button>
+<button onclick="setTheme('night')">Night Shift</button>
+</div>
+
+<h3 style="margin-top:20px;">Export</h3>
+<div class="row">
+<button id="exportBtn">Export Activity Log (CSV)</button>
+</div>
+<div class="row">
+<button id="exportSummaryBtn">Export Summary (CSV)</button>
+<button id="exportSummaryPDFBtn">Export Summary (PDF)</button>
+</div>
+
+<script>
+let packages = 0;
+let items = 0;
+let events = [];
+
+let shiftStartTime = null;
+let shiftTimer = null;
+let exceptionStart = null;
+let currentException = null;
+
+let hourlyItems = [];
+let hourlyLabels = [];
+
+// SHIFT CONTROLS
+document.getElementById("startShiftBtn").onclick = () => {
+    if(shiftStartTime) return;
+    shiftStartTime = Date.now();
+    events.push({time: shiftStartTime, type:"SHIFT_START"});
+    shiftTimer = setInterval(updateDisplay, 1000);
+};
+document.getElementById("stopShiftBtn").onclick = () => {
+    if(!shiftStartTime) return;
+    clearInterval(shiftTimer);
+    events.push({time: Date.now(), type:"SHIFT_STOP"});
+    shiftStartTime = null;
+    updateDisplay();
+};
+
+// COUNTERS
+function addPackage(){
+    if(!shiftStartTime) return alert("Start shift first.");
+    let perPackage = parseInt(document.getElementById("itemsPerPackage").value);
+    if(!perPackage || perPackage<1) perPackage=1;
+    packages++;
+    items += perPackage;
+    events.push({time: Date.now(), type:"PACKAGE", details:perPackage});
+    document.getElementById("packages").innerText = packages;
+    document.getElementById("items").innerText = items;
+    updateUPH();
+}
+
+function addItems(){
+    if(!shiftStartTime) return alert("Start shift first.");
+    let count = parseInt(document.getElementById("itemCount").value);
+    if(!count || count<1) return alert("Enter a positive number.");
+    items += count;
+    events.push({time: Date.now(), type:"ITEMS", details:count});
+    document.getElementById("items").innerText = items;
+    updateUPH();
+}
+
+// EXCEPTIONS
+function startException(name){
+    if(exceptionStart) return;
+    exceptionStart = Date.now();
+    currentException = name;
+    events.push({time: exceptionStart, type:"EX_START", details:name});
+    document.getElementById("exceptionStatus").innerText = "Exception: " + name;
+}
+function stopException(){
+    if(!exceptionStart) return;
+    let now = Date.now();
+    let dur = now - exceptionStart;
+    events.push({time: now, type:"EX_END", details:JSON.stringify({name:currentException,durationMs:dur})});
+    exceptionStart = null;
+    currentException = null;
+    document.getElementById("exceptionStatus").innerText = "Exception: None";
+}
+
+// THEME
+function setTheme(t){ document.body.className=t; localStorage.setItem("uphTheme",t); }
+let savedTheme = localStorage.getItem("uphTheme"); if(savedTheme) document.body.className=savedTheme;
+
+// TIMER DISPLAY
+function getEffectiveMs(now=new Date()){
+    if(!shiftStartTime) return 0;
+    let total = now - shiftStartTime;
+    events.forEach(e=>{ if(e.type==="EX_END"){ try{ let d=JSON.parse(e.details); total-=d.durationMs; }catch{} } });
+    if(exceptionStart) total-=(now-exceptionStart);
+    return total;
+}
+
+function updateDisplay(){
+    let now=new Date();
+    let eff=getEffectiveMs(now);
+    let sec=Math.floor(eff/1000);
+    let h=Math.floor(sec/3600);
+    let m=Math.floor((sec%3600)/60);
+    let s=
